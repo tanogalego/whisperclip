@@ -122,9 +122,13 @@ def notify(title, message):
 def paste_text(text):
     pyperclip.copy(text)
     time.sleep(0.15)
-    kb = keyboard.Controller()
-    with kb.pressed(keyboard.Key.cmd):
-        kb.tap("v")
+    # keyboard.Controller usa APIs de macOS que requieren el main thread.
+    # Como paste_text se llama desde un background thread, usamos osascript
+    # para enviar Cmd+V — es un keystroke hardcodeado, sin texto del usuario.
+    subprocess.run(
+        ["osascript", "-e", 'tell application "System Events" to keystroke "v" using {command down}'],
+        capture_output=True,
+    )
 
 
 def load_config():
@@ -538,6 +542,29 @@ def uninstall_launchd():
         print("WhisperClip no estaba instalado como servicio.")
 
 
+def _request_macos_permissions():
+    """
+    Solicita explícitamente los permisos de Accesibilidad.
+    Muestra el diálogo del sistema si aún no fueron otorgados.
+    """
+    try:
+        from ApplicationServices import (
+            AXIsProcessTrustedWithOptions,
+            kAXTrustedCheckOptionPrompt,
+        )
+        trusted = AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+        if trusted:
+            logger.info("Permiso de Accesibilidad: OK")
+        else:
+            logger.warning(
+                "Permiso de Accesibilidad no otorgado. "
+                "Abrí Configuración del Sistema → Privacidad → Accesibilidad, "
+                "activá Python, luego reiniciá WhisperClip."
+            )
+    except Exception as e:
+        logger.warning(f"No se pudo verificar permisos de Accesibilidad: {e}")
+
+
 def acquire_single_instance():
     """Previene que corran dos instancias simultáneas. Devuelve el file handle del lock."""
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -595,6 +622,8 @@ WhisperClip — Uso:
         return
 
     _lock_handle = acquire_single_instance()  # noqa: F841 — mantiene el lock vivo
+
+    _request_macos_permissions()
 
     config = load_config()
     if not CONFIG_PATH.exists():
