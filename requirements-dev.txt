@@ -1,1 +1,2 @@
-py2app>=0.28
+# No hay dependencias de build adicionales.
+# El app bundle se construye con setup.py build_app (stdlib only).
