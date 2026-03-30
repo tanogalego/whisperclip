@@ -35,11 +35,16 @@ El ícono en la barra de menú muestra el estado: `mic` (idle) → `REC` (graban
 
 ## Permisos de macOS
 
-La primera vez necesitás dar permisos en **Preferencias del Sistema → Privacidad y Seguridad**:
+La primera vez necesitás dar permisos en **Configuración del Sistema → Privacidad y Seguridad**.
+En cada sección, hacé click en `+` y seleccioná `~/whisperclip/dist/WhisperClip.app`:
 
-- **Micrófono** → agregar WhisperClip
-- **Accesibilidad** → agregar WhisperClip
-- **Monitorización de entrada** → agregar WhisperClip
+| Permiso | Para qué se usa |
+|---------|----------------|
+| **Micrófono** | Capturar audio para transcribir |
+| **Accesibilidad** | Detectar hotkeys globales |
+| **Monitorización de entrada** | Interceptar eventos de teclado |
+
+> **Importante:** agregá `WhisperClip.app` (no Python ni Terminal). La app debe estar construida (`make build`) antes de agregar los permisos.
 
 ---
 
@@ -145,7 +150,7 @@ make install      # copia a ~/Applications/
 O sin `make`:
 ```bash
 source venv/bin/activate
-python setup.py py2app
+python setup.py build_app
 ```
 
 ---

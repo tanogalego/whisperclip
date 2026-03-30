@@ -81,10 +81,10 @@ echo "🎤 Descargando modelo Whisper 'base' (~140MB)..."
 python -c "import whisper; whisper.load_model('base')" 2>/dev/null
 echo "   Modelo descargado."
 
-# ─── 9. Construir WhisperClip.app con py2app ─────────────────────────────────
+# ─── 9. Construir WhisperClip.app ────────────────────────────────────────────
 echo "🖥  Construyendo WhisperClip.app..."
 cd "$INSTALL_DIR"
-python setup.py py2app 2>/dev/null
+python setup.py build_app
 echo "   App construida en $APP_PATH"
 
 # ─── 10. Configuración inicial ───────────────────────────────────────────────
