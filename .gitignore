@@ -1,14 +1,21 @@
+# Python
 venv/
-build/
-dist/
 __pycache__/
 *.pyc
 *.pyo
-.DS_Store
-WhisperClip.app/
 *.egg-info/
-HotkeyListener
-HotkeyListener.swift
-build.sh
-run.sh
-setup.py
+
+# Build artifacts
+build/
+dist/
+WhisperClip.app/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Secrets
+.env

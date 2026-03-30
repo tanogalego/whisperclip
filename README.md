@@ -47,11 +47,11 @@ La primera vez necesitás dar permisos en **Preferencias del Sistema → Privaci
 
 Para que WhisperClip arranque solo al iniciar sesión:
 
-**Preferencias del Sistema → General → Ítems de inicio de sesión → `+`** → seleccioná `~/whisperclip/WhisperClip.app`
+**Preferencias del Sistema → General → Ítems de inicio de sesión → `+`** → seleccioná `~/whisperclip/dist/WhisperClip.app`
 
 Para iniciarlo manualmente:
 ```bash
-~/whisperclip/WhisperClip.app/Contents/MacOS/WhisperClip &
+open ~/whisperclip/dist/WhisperClip.app
 ```
 
 ---
@@ -121,9 +121,49 @@ WhisperClip funciona sin API key (transcripción directa con Whisper). Para acti
 
 1. Creá una cuenta en [console.anthropic.com](https://console.anthropic.com/)
 2. Generá una API key
-3. Agregala en `~/.whisperclip/config.json`
+3. Configurala como variable de entorno (recomendado por seguridad):
+   ```bash
+   # Agregá esto a tu ~/.zshrc
+   export ANTHROPIC_API_KEY='tu-api-key-acá'
+   ```
+4. O bien guardala directamente en `~/.whisperclip/config.json` en el campo `anthropic_api_key`
+
+> La variable de entorno tiene prioridad sobre el archivo de config.
 
 El costo es mínimo — Claude Haiku con uso moderado sale menos de $1/mes.
+
+---
+
+## Build desde el código fuente
+
+```bash
+cd ~/whisperclip
+make build        # construye dist/WhisperClip.app
+make install      # copia a ~/Applications/
+```
+
+O sin `make`:
+```bash
+source venv/bin/activate
+python setup.py py2app
+```
+
+---
+
+## Logs y troubleshooting
+
+El log de la app está en `~/.whisperclip/whisperclip.log`.
+
+Desde el menú de la app podés usar **"Ver log..."** para abrirlo, o **"Copiar log"** para copiar las últimas 50 líneas al portapapeles (útil para reportar bugs).
+
+Problemas comunes:
+
+| Síntoma | Causa probable | Solución |
+|---------|---------------|---------|
+| Hotkeys no responden | Falta permiso de Accesibilidad o Monitorización de entrada | Agregar en Preferencias del Sistema → Privacidad |
+| No graba audio | Falta permiso de Micrófono | Agregar en Preferencias del Sistema → Privacidad |
+| `ERR` en el ícono | Error de transcripción | Ver el log para detalles |
+| Claude no procesa | API key inválida o sin conexión | Verificar `ANTHROPIC_API_KEY` o deshabilitar Claude |
 
 ---
 

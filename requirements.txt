@@ -5,3 +5,4 @@ anthropic>=0.40.0
 pynput>=1.7.6
 pyperclip>=1.8.2
 scipy>=1.11.0
+rumps>=0.4.0

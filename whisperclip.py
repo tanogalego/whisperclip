@@ -12,8 +12,12 @@ import tempfile
 import subprocess
 import json
 import re
+import copy
+import fcntl
+import logging
 from pathlib import Path
 from datetime import datetime
+from version import __version__
 
 # ─── Dependencias ───────────────────────────────────────────────────────────
 try:
@@ -34,6 +38,23 @@ except ImportError as e:
     sys.exit(1)
 
 CONFIG_PATH = Path.home() / ".whisperclip" / "config.json"
+LOG_PATH    = Path.home() / ".whisperclip" / "whisperclip.log"
+LOCK_PATH   = Path.home() / ".whisperclip" / "whisperclip.lock"
+
+
+def setup_logging():
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(LOG_PATH),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+
+
+logger = logging.getLogger("whisperclip")
 
 DEFAULT_CONFIG = {
     "hotkeys": [
@@ -93,10 +114,7 @@ ICON_ERROR      = "err"
 
 def notify(title, message):
     try:
-        subprocess.run(
-            ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
-            capture_output=True
-        )
+        rumps.notification(title, "", message)
     except Exception:
         pass
 
@@ -110,21 +128,22 @@ def paste_text(text):
 
 
 def load_config():
-    config = DEFAULT_CONFIG.copy()
+    config = copy.deepcopy(DEFAULT_CONFIG)
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
                 saved = json.load(f)
             config.update(saved)
         except Exception as e:
-            print(f"Warning: {e}")
+            logger.warning(f"Error leyendo config: {e}")
     return config
 
 
 def save_config(config):
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+    os.chmod(CONFIG_PATH, 0o600)
 
 
 class AudioRecorder:
@@ -139,12 +158,12 @@ class AudioRecorder:
         if self.recording:
             with self._lock:
                 self.frames.append(indata.copy())
-            if self.config.get("auto_stop_silence"):
-                volume = np.abs(indata).mean()
-                if volume < self.config.get("silence_threshold", 0.01):
-                    self._silence_counter += frames
-                else:
-                    self._silence_counter = 0
+                if self.config.get("auto_stop_silence"):
+                    volume = np.abs(indata).mean()
+                    if volume < self.config.get("silence_threshold", 0.01):
+                        self._silence_counter += frames
+                    else:
+                        self._silence_counter = 0
 
     def start(self):
         self.frames = []
@@ -152,12 +171,19 @@ class AudioRecorder:
         self.recording = True
         sr = self.config.get("sample_rate", 16000)
         ch = self.config.get("channels", 1)
-        self._stream = sd.InputStream(
-            samplerate=sr, channels=ch,
-            callback=self._audio_callback,
-            blocksize=1024, dtype="float32",
-        )
-        self._stream.start()
+        try:
+            self._stream = sd.InputStream(
+                samplerate=sr, channels=ch,
+                callback=self._audio_callback,
+                blocksize=1024, dtype="float32",
+            )
+            self._stream.start()
+        except sd.PortAudioError as e:
+            self.recording = False
+            logger.error(f"No se pudo acceder al micrófono: {e}")
+            notify("WhisperClip", "Error: no se pudo acceder al micrófono")
+            return False
+        return True
 
     def stop(self):
         self.recording = False
@@ -170,17 +196,23 @@ class AudioRecorder:
             return np.concatenate(self.frames, axis=0)
 
     def should_auto_stop(self):
-        sr = self.config.get("sample_rate", 16000)
-        return self._silence_counter > (sr * self.config.get("silence_duration", 2.0))
+        with self._lock:
+            sr = self.config.get("sample_rate", 16000)
+            return self._silence_counter > (sr * self.config.get("silence_duration", 2.0))
 
 
 class Transcriber:
     def __init__(self, config):
         self.config = config
         model_name = config["whisper_model"]
-        print(f"Cargando Whisper '{model_name}'...")
-        self._model = whisper.load_model(model_name)
-        print(f"Whisper '{model_name}' listo.")
+        logger.info(f"Cargando Whisper '{model_name}'...")
+        try:
+            self._model = whisper.load_model(model_name)
+        except Exception as e:
+            logger.error(f"No se pudo cargar el modelo Whisper '{model_name}': {e}", exc_info=True)
+            notify("WhisperClip", f"Error cargando modelo Whisper '{model_name}'")
+            raise SystemExit(1)
+        logger.info(f"Whisper '{model_name}' listo.")
 
     def transcribe(self, audio, language=None):
         if audio.ndim > 1:
@@ -189,7 +221,9 @@ class Transcriber:
         lang = language or self.config.get("language")
         options = {"language": lang} if lang else {}
         import scipy.io.wavfile as wavfile
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_dir = Path.home() / ".whisperclip" / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=tmp_dir) as f:
             tmp_path = f.name
         wavfile.write(tmp_path, self.config.get("sample_rate", 16000), audio)
         try:
@@ -202,10 +236,10 @@ class Transcriber:
 class ClaudeProcessor:
     def __init__(self, config):
         self.config = config
-        api_key = config.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or config.get("anthropic_api_key", "")
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
         if not self.client:
-            print("Sin API key de Anthropic — post-procesamiento desactivado.")
+            logger.info("Sin API key de Anthropic — post-procesamiento desactivado.")
 
     def process(self, text, mode_key="transcription"):
         if not self.client or not self.config.get("claude_enabled", True):
@@ -217,11 +251,12 @@ class ClaudeProcessor:
             msg = self.client.messages.create(
                 model=self.config.get("claude_model", "claude-haiku-4-5-20251001"),
                 max_tokens=1024,
-                messages=[{"role": "user", "content": f"{mode['prompt']}\n\nTexto:\n{text}"}]
+                messages=[{"role": "user", "content": f"{mode['prompt']}\n\nTexto:\n{text}"}],
+                timeout=10.0,
             )
             return msg.content[0].text.strip()
         except Exception as e:
-            print(f"Error Claude: {e}")
+            logger.error(f"Error Claude: {e}", exc_info=True)
             return text
 
 
@@ -237,6 +272,8 @@ class WhisperClipMenuApp(rumps.App):
         self.is_paused = False
         self._active_hk = None
         self._last_trigger = {}
+        self._recording_lock = threading.Lock()
+        self._max_timer = None
         self._build_menu()
         self._start_keyboard_listener()
 
@@ -250,12 +287,13 @@ class WhisperClipMenuApp(rumps.App):
 
         self.pause_item = rumps.MenuItem("Pausar", callback=self.toggle_pause)
         self.menu = (
-            [rumps.MenuItem("WhisperClip")] +
+            [rumps.MenuItem(f"WhisperClip v{__version__}")] +
             [rumps.separator] +
             shortcut_items +
             [rumps.separator,
              self.pause_item,
              rumps.MenuItem("Ver log...", callback=self.open_log),
+             rumps.MenuItem("Copiar log", callback=self.copy_log),
              rumps.MenuItem("Editar configuracion...", callback=self.open_config),
              rumps.separator,
              rumps.MenuItem("Cerrar WhisperClip", callback=self.quit_app)]
@@ -284,8 +322,18 @@ class WhisperClipMenuApp(rumps.App):
         rumps.quit_application()
 
     def open_log(self, _):
-        subprocess.run(["open", "-a", "Console", "/tmp/whisperclip.log"], capture_output=True)
-        subprocess.run(["open", "/tmp/whisperclip.log"], capture_output=True)
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LOG_PATH.touch(exist_ok=True)
+        subprocess.run(["open", str(LOG_PATH)], capture_output=True)
+
+    def copy_log(self, _):
+        try:
+            if LOG_PATH.exists():
+                lines = LOG_PATH.read_text().splitlines()
+                pyperclip.copy("\n".join(lines[-50:]))
+                notify("WhisperClip", "Últimas 50 líneas del log copiadas al portapapeles")
+        except Exception as e:
+            logger.error(f"Error copiando log: {e}")
 
     def open_config(self, _):
         subprocess.run(["open", str(CONFIG_PATH)])
@@ -346,22 +394,26 @@ class WhisperClipMenuApp(rumps.App):
         self._listener.start()
 
     def _toggle(self, hk_cfg):
-        if not self.is_recording:
-            self._start_recording(hk_cfg)
-        else:
-            self._stop_and_process()
+        with self._recording_lock:
+            if not self.is_recording:
+                self._start_recording_locked(hk_cfg)
+            else:
+                self._stop_and_process_locked()
 
-    def _start_recording(self, hk_cfg):
+    def _start_recording_locked(self, hk_cfg):
+        """Debe llamarse con _recording_lock adquirido."""
         self.is_recording = True
         self._active_hk = hk_cfg
-        self.recorder.start()
+        if self.recorder.start() is False:
+            self.is_recording = False
+            self.set_state("error")
+            return
         label = hk_cfg.get("label", "")
         self.set_state("recording", label)
         if self.config.get("show_notifications"):
-            mode_name = CLAUDE_MODES.get(hk_cfg.get("claude_mode", ""), {}).get("name", "")
             threading.Thread(
                 target=notify,
-                args=(f"WhisperClip [{label}]", f"Grabando..."),
+                args=(f"WhisperClip [{label}]", "Grabando..."),
                 daemon=True
             ).start()
         if self.config.get("auto_stop_silence"):
@@ -374,12 +426,23 @@ class WhisperClipMenuApp(rumps.App):
                     time.sleep(0.1)
             threading.Thread(target=watch, daemon=True).start()
         max_sec = self.config.get("max_record_seconds", 120)
-        threading.Timer(max_sec, self._stop_and_process).start()
+        self._max_timer = threading.Timer(max_sec, self._stop_and_process)
+        self._max_timer.daemon = True
+        self._max_timer.start()
 
     def _stop_and_process(self):
+        """Llamado desde timer o silence-watcher — adquiere el lock."""
+        with self._recording_lock:
+            self._stop_and_process_locked()
+
+    def _stop_and_process_locked(self):
+        """Debe llamarse con _recording_lock adquirido."""
         if not self.is_recording:
             return
         self.is_recording = False
+        if self._max_timer is not None:
+            self._max_timer.cancel()
+            self._max_timer = None
         self.set_state("processing")
         hk_cfg = self._active_hk
         threading.Thread(target=self._process_audio, args=(hk_cfg,), daemon=True).start()
@@ -395,7 +458,7 @@ class WhisperClipMenuApp(rumps.App):
         try:
             raw_text = self.transcriber.transcribe(audio, language=lang)
         except Exception as e:
-            print(f"Error transcribiendo: {e}")
+            logger.error(f"Error transcribiendo: {e}", exc_info=True)
             self.set_state("error")
             time.sleep(2)
             self.set_state("idle")
@@ -440,13 +503,15 @@ def install_launchd():
     <key>KeepAlive</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>/tmp/whisperclip.log</string>
+    <string>{LOG_PATH}</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/whisperclip.log</string>
+    <string>{LOG_PATH}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>{os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}</string>
+        <key>ANTHROPIC_API_KEY</key>
+        <string>{os.environ.get('ANTHROPIC_API_KEY', '')}</string>
     </dict>
 </dict>
 </plist>"""
@@ -473,7 +538,22 @@ def uninstall_launchd():
         print("WhisperClip no estaba instalado como servicio.")
 
 
+def acquire_single_instance():
+    """Previene que corran dos instancias simultáneas. Devuelve el file handle del lock."""
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        return lock_file  # mantener referencia viva hasta que el proceso termine
+    except IOError:
+        print("WhisperClip ya está corriendo.")
+        sys.exit(0)
+
+
 def main():
+    setup_logging()
     args = sys.argv[1:]
 
     if "--help" in args or "-h" in args:
@@ -513,6 +593,8 @@ WhisperClip — Uso:
     elif "uninstall" in args:
         uninstall_launchd()
         return
+
+    _lock_handle = acquire_single_instance()  # noqa: F841 — mantiene el lock vivo
 
     config = load_config()
     if not CONFIG_PATH.exists():

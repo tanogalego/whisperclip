@@ -6,7 +6,7 @@ set -e
 
 REPO="https://github.com/tanogalego/whisperclip.git"
 INSTALL_DIR="$HOME/whisperclip"
-APP_PATH="$INSTALL_DIR/WhisperClip.app"
+APP_PATH="$INSTALL_DIR/dist/WhisperClip.app"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.whisperclip.plist"
 
 echo ""
@@ -26,7 +26,6 @@ echo "📦 Verificando Homebrew..."
 if ! command -v brew &>/dev/null; then
     echo "   Instalando Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    # Agregar brew al PATH para Apple Silicon
     if [[ -f "/opt/homebrew/bin/brew" ]]; then
         eval "$(/opt/homebrew/bin/brew shellenv)"
     fi
@@ -75,52 +74,24 @@ source "$INSTALL_DIR/venv/bin/activate"
 echo "📚 Instalando dependencias (puede tardar unos minutos)..."
 pip install --upgrade pip --quiet
 pip install -r "$INSTALL_DIR/requirements.txt" --quiet
+pip install -r "$INSTALL_DIR/requirements-dev.txt" --quiet
 
 # ─── 8. Modelo Whisper ───────────────────────────────────────────────────────
 echo "🎤 Descargando modelo Whisper 'base' (~140MB)..."
 python -c "import whisper; whisper.load_model('base')" 2>/dev/null
 echo "   Modelo descargado."
 
-# ─── 9. Crear WhisperClip.app ────────────────────────────────────────────────
-echo "🖥  Creando WhisperClip.app..."
-mkdir -p "$APP_PATH/Contents/MacOS"
-mkdir -p "$APP_PATH/Contents/Resources"
-
-cat > "$APP_PATH/Contents/MacOS/WhisperClip" << APPEOF
-#!/bin/bash
+# ─── 9. Construir WhisperClip.app con py2app ─────────────────────────────────
+echo "🖥  Construyendo WhisperClip.app..."
 cd "$INSTALL_DIR"
-source venv/bin/activate
-exec python whisperclip.py
-APPEOF
-chmod +x "$APP_PATH/Contents/MacOS/WhisperClip"
-
-cat > "$APP_PATH/Contents/Info.plist" << PLISTEOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.whisperclip.app</string>
-    <key>CFBundleName</key>
-    <string>WhisperClip</string>
-    <key>CFBundleDisplayName</key>
-    <string>WhisperClip</string>
-    <key>CFBundleExecutable</key>
-    <string>WhisperClip</string>
-    <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>WhisperClip necesita el microfono para transcribir tu voz.</string>
-</dict>
-</plist>
-PLISTEOF
+python setup.py py2app 2>/dev/null
+echo "   App construida en $APP_PATH"
 
 # ─── 10. Configuración inicial ───────────────────────────────────────────────
 CONFIG_DIR="$HOME/.whisperclip"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 mkdir -p "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo ""
@@ -128,12 +99,13 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "  Configuración inicial"
     echo "══════════════════════════════════════════"
     echo ""
-    echo "Para usar WhisperClip necesitás una API key de Anthropic (Claude)."
-    echo "Obtené la tuya gratis en: https://console.anthropic.com/"
+    echo "Para usar el post-procesamiento con Claude necesitás una API key de Anthropic."
+    echo "Obtené la tuya en: https://console.anthropic.com/"
     echo "(Podés dejarla vacía por ahora y configurarla después)"
     echo ""
-    read -p "🔑 Anthropic API Key: " API_KEY
+    read -p "🔑 Anthropic API Key (Enter para omitir): " API_KEY
 
+    # Guardar config sin la API key — usar variable de entorno es más seguro
     cat > "$CONFIG_FILE" << CONFIGEOF
 {
   "hotkeys": [
@@ -155,16 +127,25 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   "channels": 1,
   "claude_model": "claude-haiku-4-5-20251001",
   "claude_enabled": true,
-  "anthropic_api_key": "$API_KEY",
+  "anthropic_api_key": "",
   "max_record_seconds": 120,
   "silence_threshold": 0.01,
   "silence_duration": 2.0,
   "auto_stop_silence": false,
-  "show_notifications": false,
+  "show_notifications": true,
   "sound_feedback": false
 }
 CONFIGEOF
+    chmod 600 "$CONFIG_FILE"
     echo "   Configuración guardada en $CONFIG_FILE"
+
+    if [[ -n "$API_KEY" ]]; then
+        echo ""
+        echo "   Para que la API key esté disponible al iniciar sesión, agregá esto a tu ~/.zshrc:"
+        echo "   export ANTHROPIC_API_KEY='$API_KEY'"
+        echo ""
+        echo "   (La clave NO se guardó en config.json por seguridad)"
+    fi
 fi
 
 # ─── 11. Inicio de sesión ─────────────────────────────────────────────────────
@@ -188,8 +169,8 @@ echo "════════════════════════�
 echo ""
 echo "Necesitás dar estos permisos en Preferencias del Sistema → Privacidad:"
 echo ""
-echo "  1. Micrófono         → agregar WhisperClip"
-echo "  2. Accesibilidad     → agregar WhisperClip"
+echo "  1. Micrófono             → agregar WhisperClip"
+echo "  2. Accesibilidad         → agregar WhisperClip"
 echo "  3. Monitorización de entrada → agregar WhisperClip"
 echo ""
 echo "Ruta de la app: $APP_PATH"
@@ -201,7 +182,7 @@ echo "║         ✅ Instalación completa          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 echo "Para iniciar WhisperClip ahora:"
-echo "  $APP_PATH/Contents/MacOS/WhisperClip &"
+echo "  open \"$APP_PATH\""
 echo ""
 echo "Shortcuts por defecto:"
 echo "  ⌥ + /  →  Transcribir en español"
@@ -209,4 +190,7 @@ echo "  ⌥ + '  →  Transcribir y traducir al inglés"
 echo ""
 echo "Para cambiar shortcuts u otras opciones:"
 echo "  $CONFIG_FILE"
+echo ""
+echo "Log de la app:"
+echo "  $CONFIG_DIR/whisperclip.log"
 echo ""
