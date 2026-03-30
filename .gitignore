@@ -1,0 +1,15 @@
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+WhisperClip.app/
+*.egg-info/
+HotkeyListener
+HotkeyListener.swift
+build.sh
+run.sh
+setup.py
+README.md
