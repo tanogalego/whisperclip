@@ -1,16 +1,16 @@
 """
 setup.py — Construye WhisperClip.app como bundle nativo de macOS.
 
-El bundle usa un launcher shell que activa el venv y corre whisperclip.py.
-Este enfoque es más confiable que py2app para apps con dependencias ML pesadas
-(whisper/torch), y es el patrón estándar usado por Homebrew y otros proyectos Python.
+El bundle usa un launcher compilado en Swift (binario Mach-O real) que lanza
+whisperclip.py via el venv. Un binario real es necesario para que macOS TCC
+otorgue correctamente los permisos de Micrófono, Accesibilidad e Input Monitoring.
 
 Uso:
     python setup.py build_app
 """
-import os
 import re
-import stat
+import subprocess
+import sys
 from pathlib import Path
 
 # Leer version sin importar el modulo completo
@@ -18,8 +18,8 @@ with open("version.py") as f:
     version = re.search(r'__version__\s*=\s*"(.+?)"', f.read()).group(1)
 
 INSTALL_DIR = Path(__file__).resolve().parent
-APP_DIR = INSTALL_DIR / "dist" / "WhisperClip.app"
-MACOS_DIR = APP_DIR / "Contents" / "MacOS"
+APP_DIR     = INSTALL_DIR / "dist" / "WhisperClip.app"
+MACOS_DIR   = APP_DIR / "Contents" / "MacOS"
 RESOURCES_DIR = APP_DIR / "Contents" / "Resources"
 
 PLIST = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -51,12 +51,6 @@ PLIST = f"""<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>"""
 
-LAUNCHER = f"""#!/bin/bash
-cd "{INSTALL_DIR}"
-source venv/bin/activate
-exec python whisperclip.py
-"""
-
 
 def build_app():
     print(f"Building WhisperClip.app v{version}...")
@@ -64,10 +58,16 @@ def build_app():
     MACOS_DIR.mkdir(parents=True, exist_ok=True)
     RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Launcher ejecutable
-    launcher = MACOS_DIR / "WhisperClip"
-    launcher.write_text(LAUNCHER)
-    launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    # Compilar launcher Swift -> binario Mach-O real (necesario para permisos TCC)
+    launcher_bin = MACOS_DIR / "WhisperClip"
+    print("  Compilando launcher Swift...")
+    result = subprocess.run(
+        ["swiftc", str(INSTALL_DIR / "Launcher.swift"), "-o", str(launcher_bin)],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"Error compilando Launcher.swift:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
 
     # Info.plist
     (APP_DIR / "Contents" / "Info.plist").write_text(PLIST)
@@ -77,7 +77,6 @@ def build_app():
 
 
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) > 1 and sys.argv[1] == "build_app":
         build_app()
     else:

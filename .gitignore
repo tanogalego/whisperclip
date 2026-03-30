@@ -19,3 +19,6 @@ WhisperClip.app/
 
 # Secrets
 .env
+
+# Binario compilado del launcher (se regenera con make build)
+Launcher
